@@ -3,6 +3,7 @@ from __future__ import division, print_function, absolute_import
 
 import re
 import os
+import shutil
 import numpy as np
 import tensorflow as tf
 from tensorflow.python.training import optimizer as tf_optimizer
@@ -16,6 +17,8 @@ from ..utils import to_list, id_generator, check_dir_name, standarize_dict, \
 from .. import data_flow
 from .. import variables
 from .. import utils
+from ..export_model import build_and_run_exports, json_serving_input_fn
+
 
 from .summarizer import summaries, summarize, summarize_gradients, \
     summarize_variables, summarize_activations
@@ -74,6 +77,9 @@ class Trainer(object):
     def __init__(self, train_ops, graph=None, clip_gradients=5.0,
                  tensorboard_dir="/tmp/tflearn_logs/",
                  tensorboard_verbose=0, checkpoint_path=None, best_checkpoint_path=None,
+                 saved_model_export_dir=None,
+                 input_placeholder=None,
+                 output_placeholder=None,
                  max_checkpoints=None,
                  keep_checkpoint_every_n_hours=10000.0, random_seed=None,
                  session=None, best_val_accuracy=0.0):
@@ -105,6 +111,9 @@ class Trainer(object):
                                               tf.add(self.global_step, 1))
             self.best_val_accuracy = best_val_accuracy
             self.best_checkpoint_path = best_checkpoint_path
+            self.saved_model_export_dir = saved_model_export_dir
+            self.input_placeholder = input_placeholder
+            self.output_placeholder = output_placeholder
 
             config = None
             tflearn_conf = tf.get_collection(tf.GraphKeys.GRAPH_CONFIG)
@@ -168,13 +177,10 @@ class Trainer(object):
                 except Exception as e:
                     init = tf.initialize_all_variables()
                 self.session.run(init)
-            # Fix for re-using sessions
-            #initialize_uninit_variables(self.session)
 
     def fit(self, feed_dicts, n_epoch=10, val_feed_dicts=None, show_metric=False,
             snapshot_step=None, snapshot_epoch=True, shuffle_all=None,
-            dprep_dict=None, daug_dict=None, excl_trainops=None, run_id=None,
-            callbacks=[]):
+            dprep_dict=None, daug_dict=None, excl_trainops=None, run_id=None, callbacks=[]):
         """ fit.
 
         Train network with feeded data dicts.
@@ -237,9 +243,10 @@ class Trainer(object):
 
         original_train_ops = list(self.train_ops)
         # Remove excluded train_ops
-        if excl_trainops:
-            self.train_ops = list(filter(lambda a: a not in excl_trainops, self.train_ops))
-	    
+        for t in self.train_ops:
+            if excl_trainops and t in excl_trainops:
+                self.train_ops.remove(t)
+
         # shuffle is an override for simplicty, it will overrides every
         # training op batch shuffling
         if isinstance(shuffle_all, bool):
@@ -359,6 +366,20 @@ class Trainer(object):
 
         self.summ_writer.close()
 
+    def export(self):
+        # delete export dir if it already exists and create fresh
+        if os.path.exists(self.saved_model_export_dir):
+            print("export path exists: %s " % self.saved_model_export_dir)
+            shutil.rmtree(self.saved_model_export_dir)
+            print("Deleted previous export dir: %s " % self.saved_model_export_dir)
+
+        # Export the model
+        build_and_run_exports(session=self.session, export_path=self.saved_model_export_dir,
+                              serving_input_fn=json_serving_input_fn,
+                              prediction_tensor=self.output_placeholder,
+                              continuous_cols={'sentence': self.input_placeholder})
+        print("Exported the SavedModel files at %s" % self.saved_model_export_dir)
+
     def fit_batch(self, feed_dicts, dprep_dict=None, daug_dict=None):
         """ fit_batch.
 
@@ -394,7 +415,8 @@ class Trainer(object):
         if len(val_loss) == 1: val_loss = val_loss[0]
         return val_loss
 
-    def save(self, model_file, global_step=None):
+
+    def save(self, model_file, global_step=None, export_saved_model=False):
         """ save.
 
         Save a Tensorflow model
@@ -411,6 +433,8 @@ class Trainer(object):
         if not os.path.isabs(model_file):
             model_file = os.path.abspath(os.path.join(os.getcwd(), model_file))
         self.saver.save(self.session, model_file, global_step=global_step)
+        if export_saved_model and (self.input_placeholder is not None):
+            self.export()
         utils.fix_saver(obj_lists)
 
     def restore(self, model_file, trainable_variable_only=False, variable_name_map=None, scope_for_restore=None,
@@ -565,8 +589,7 @@ class TrainOp(object):
 
     def __init__(self, loss, optimizer, metric=None, batch_size=64, ema=0.,
                  trainable_vars=None, shuffle=True, step_tensor=None,
-                 validation_monitors=None, validation_batch_size=None,
-                 name=None, graph=None):
+                 validation_monitors=None, validation_batch_size=None, name=None, graph=None):
         self.graph = tf.get_default_graph()
         if graph:
             self.graph = graph
@@ -794,9 +817,7 @@ class TrainOp(object):
 
     def _train(self, training_step, snapshot_epoch, snapshot_step,
                show_metric):
-        """ _train.
-
-        Training process for this optimizer.
+        """ Training process for this optimizer.
 
         Arguments:
             training_step: `int`. The global step.
@@ -894,6 +915,7 @@ class TrainOp(object):
                                       feed_dict=feed_dict)
         tflearn.is_training(False, session=self.session)
         return loss
+
 
     def duplicate(self):
         """ Returns a duplicated `TrainOp` """
@@ -1087,12 +1109,3 @@ class TrainingState(object):
     def resetGlobal(self):
         self.global_acc = 0.0
         self.global_loss = 0.0
-
-
-# def initialize_uninit_variables(session, list_of_variables=None):
-#     if list_of_variables is None:
-#         list_of_variables = tf.global_variables()
-#     uninitialized_variables = list(tf.get_variable(name) for name in
-#                                    session.run(tf.report_uninitialized_variables(list_of_variables)))
-#     session.run(tf.variables_initializer(uninitialized_variables))
-#     return uninitialized_variables

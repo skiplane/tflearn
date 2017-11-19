@@ -48,22 +48,11 @@ class DNN(object):
     """
 
     def __init__(self, network, clip_gradients=5.0, tensorboard_verbose=0,
-                 tensorboard_dir="/tmp/tflearn_logs/", checkpoint_path=None,
-                 best_checkpoint_path=None, max_checkpoints=None, session=None,
-                 best_val_accuracy=0.0):
+                 tensorboard_dir="/tmp/tflearn_logs/", checkpoint_path=None, best_checkpoint_path=None,
+                 saved_model_export_dir=None, max_checkpoints=None, session=None, best_val_accuracy=0.0):
         assert isinstance(network, tf.Tensor), "'network' arg is not a Tensor!"
         self.net = network
         self.train_ops = tf.get_collection(tf.GraphKeys.TRAIN_OPS)
-        self.trainer = Trainer(self.train_ops,
-                               clip_gradients=clip_gradients,
-                               tensorboard_dir=tensorboard_dir,
-                               tensorboard_verbose=tensorboard_verbose,
-                               checkpoint_path=checkpoint_path,
-                               best_checkpoint_path=best_checkpoint_path,
-                               max_checkpoints=max_checkpoints,
-                               session=session,
-                               best_val_accuracy=best_val_accuracy)
-        self.session = self.trainer.session
 
         self.inputs = tf.get_collection(tf.GraphKeys.INPUTS)
         if len(self.inputs) == 0:
@@ -80,6 +69,25 @@ class DNN(object):
         #           "that collection.")
 
         self.targets = tf.get_collection(tf.GraphKeys.TARGETS)
+
+        input_placeholder = self.inputs[0] if len(self.inputs)==1 else None
+        if input_placeholder is None:
+            print("WARNING: More than one input or no input specified, hence will not export the saved_model!")
+
+        self.trainer = Trainer(self.train_ops,
+                               clip_gradients=clip_gradients,
+                               tensorboard_dir=tensorboard_dir,
+                               tensorboard_verbose=tensorboard_verbose,
+                               checkpoint_path=checkpoint_path,
+                               best_checkpoint_path=best_checkpoint_path,
+                               saved_model_export_dir=saved_model_export_dir,
+                               input_placeholder=input_placeholder,
+                               output_placeholder=network,
+                               max_checkpoints=max_checkpoints,
+                               session=session,
+                               best_val_accuracy=best_val_accuracy)
+        self.session = self.trainer.session
+
         # TODO: error tracking when targets are actually used
         # if len(self.targets) == 0:
         #     raise Exception("No target data! Please add a 'regression' layer "
@@ -240,6 +248,7 @@ class DNN(object):
                                       dprep_dict=dprep_dict,
                                       daug_dict=daug_dict)
 
+
     def predict(self, X):
         """ Predict.
 
@@ -277,7 +286,7 @@ class DNN(object):
         else:
             return labels[:, ::-1]
 
-    def save(self, model_file):
+    def save(self, model_file, export_saved_model=False):
         """ Save.
 
         Save model weights.
@@ -287,7 +296,7 @@ class DNN(object):
 
         """
         #with self.graph.as_default():
-        self.trainer.save(model_file)
+        self.trainer.save(model_file, export_saved_model)
 
     def load(self, model_file, weights_only=False, **optargs):
         """ Load.
@@ -368,6 +377,7 @@ class DNN(object):
         feed_dict = feed_dict_builder(X, Y, self.inputs, self.targets)
         ops = [o.metric for o in self.train_ops]
         return self.predictor.evaluate(feed_dict, ops, batch_size)
+
 
     def get_train_vars(self):
         ret = list()
